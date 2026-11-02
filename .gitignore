@@ -1,0 +1,49 @@
+# Dependencies & Package Managers
+node_modules/
+.pnpm-store/
+package-lock.json
+yarn.lock
+
+# Runtime & Environment Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pub
+id_rsa*
+id_ed25519*
+.git_profiles.json
+.github_tokens.json
+.git_projects.json
+
+# Logs & Process Output
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+
+# Build Artifacts
+dist/
+build/
+
+# Operating System & IDE Artifacts
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+desktop.ini
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
