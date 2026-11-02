@@ -102,9 +102,10 @@ async function publishProject(inputPath, inputRepoName, inputProfile) {
 
     // Ensure .gitignore exists or prompt to generate one
     const gitignoreFile = path.join(localPath, '.gitignore');
-    if (!fs.existsSync(gitignoreFile)) {
+    const hasGitignore = fs.existsSync(gitignoreFile) && fs.statSync(gitignoreFile).size > 0;
+    if (!hasGitignore) {
         console.log();
-        console.log(chalk.yellow('  ◈ No .gitignore file detected in this project.'));
+        console.log(chalk.yellow('  ◈ No functional .gitignore file detected in this project.'));
         const { createGitignore } = await inquirer.prompt([{
             type: 'confirm',
             name: 'createGitignore',
@@ -212,7 +213,7 @@ async function publishProject(inputPath, inputRepoName, inputProfile) {
         return;
     }
 
-    // Register in tracked projects immediately so the repo is remembered even if push is interrupted
+    // Register in tracked projects immediately so the repository is remembered even if push fails
     addTrackedProject(localPath, repoName, profile.github_user);
 
     // Push to GitHub
@@ -230,7 +231,7 @@ async function publishProject(inputPath, inputRepoName, inputProfile) {
     } catch (e) {
         console.log();
         writeStatusError(`Git push failed: ${e.message}. Ensure your SSH key is added to GitHub.`);
-        console.log(chalk.gray(`  (Project is saved in local registry. You can retry with Quick Commit & Push)`));
+        console.log(chalk.gray('  (Project is saved in local registry. You can retry with Quick Commit & Push)'));
     }
 
     await waitForKeypress();

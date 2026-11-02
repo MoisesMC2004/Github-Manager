@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
+const readline = require('readline');
 const inquirer = require('inquirer');
 const { writeSectionHeader, writeStatusOK, writeStatusWarn, writeStatusInfo } = require('./ui');
 
@@ -20,10 +21,7 @@ const GITIGNORE_CATEGORIES = [
         key: 'deps',
         items: [
             { pattern: 'node_modules/', desc: 'Node.js packages directory' },
-            { pattern: 'jspm_packages/', desc: 'JSPM package manager' },
-            { pattern: '.pnp/', desc: 'Yarn Plug\'n\'Play cache' },
-            { pattern: '.pnp.js', desc: 'Yarn Plug\'n\'Play file' },
-            { pattern: 'vendor/', desc: 'PHP Composer or Go vendor folder' },
+            { pattern: 'vendor/', desc: 'PHP Composer or Go vendor directory' },
             { pattern: '__pycache__/', desc: 'Python bytecode cache' },
             { pattern: '*.pyc', desc: 'Compiled Python files' },
             { pattern: '.venv/', desc: 'Python virtual environment' },
@@ -37,7 +35,7 @@ const GITIGNORE_CATEGORIES = [
         items: [
             { pattern: 'dist/', desc: 'Distribution output directory' },
             { pattern: 'build/', desc: 'Generic compiled build folder' },
-            { pattern: 'out/', desc: 'Next.js static export / generic output' },
+            { pattern: 'out/', desc: 'Next.js static export / output' },
             { pattern: '.next/', desc: 'Next.js build cache and output' },
             { pattern: '.nuxt/', desc: 'Nuxt.js build directory' },
             { pattern: '.output/', desc: 'Nitro / Nuxt server output' },
@@ -50,7 +48,7 @@ const GITIGNORE_CATEGORIES = [
         key: 'ide',
         items: [
             { pattern: '.vscode/', desc: 'Visual Studio Code workspace settings' },
-            { pattern: '.idea/', desc: 'JetBrains IntelliJ / WebStorm config' },
+            { pattern: '.idea/', desc: 'JetBrains IDE configuration' },
             { pattern: '*.swp', desc: 'Vim swap files' },
             { pattern: '*.swo', desc: 'Vim swap files' }
         ]
@@ -60,7 +58,7 @@ const GITIGNORE_CATEGORIES = [
         key: 'system',
         items: [
             { pattern: '.DS_Store', desc: 'macOS folder metadata' },
-            { pattern: 'Thumbs.db', desc: 'Windows image thumbnail cache' },
+            { pattern: 'Thumbs.db', desc: 'Windows thumbnail cache' },
             { pattern: 'desktop.ini', desc: 'Windows folder layout file' },
             { pattern: '*.log', desc: 'Runtime and debug logs' },
             { pattern: 'npm-debug.log*', desc: 'npm crash logs' },
@@ -78,8 +76,8 @@ function analyzeProject(targetPath) {
         entries = [];
     }
 
-    const isNode = entries.includes('package.json') || entries.includes('node_modules');
-    const isPython = entries.includes('requirements.txt') || entries.includes('pyproject.toml') || entries.includes('Pipfile');
+    const isNode = entries.includes('package.json') || entries.includes('node_modules') || entries.includes('pnpm-lock.yaml') || entries.includes('yarn.lock');
+    const isPython = entries.includes('requirements.txt') || entries.includes('pyproject.toml') || entries.includes('Pipfile') || entries.includes('.venv') || entries.includes('venv');
     const isRust = entries.includes('Cargo.toml');
 
     const detectedPatterns = new Set();
@@ -110,50 +108,91 @@ function analyzeProject(targetPath) {
         }
     }
 
-    // Recommended defaults based on ecosystem
+    // Default ecosystem patterns
     if (isNode) {
+        recommendedPatterns.add('.env');
         recommendedPatterns.add('node_modules/');
+        recommendedPatterns.add('dist/');
+        recommendedPatterns.add('.vscode/');
         recommendedPatterns.add('npm-debug.log*');
     }
     if (isPython) {
+        recommendedPatterns.add('.env');
         recommendedPatterns.add('__pycache__/');
         recommendedPatterns.add('*.pyc');
         recommendedPatterns.add('.venv/');
+        recommendedPatterns.add('.vscode/');
     }
     if (isRust) {
         recommendedPatterns.add('target/');
+        recommendedPatterns.add('.vscode/');
     }
 
-    // Universal standard recommendations
+    // General defaults
     recommendedPatterns.add('.env');
     recommendedPatterns.add('.DS_Store');
     recommendedPatterns.add('*.log');
 
-    return {
-        detectedPatterns,
-        recommendedPatterns
-    };
-}
-
-function buildGitignoreContent(selectedPatterns, customEntries = []) {
-    const selectedSet = new Set(selectedPatterns);
-    const sections = [];
+    const items = [];
+    const seenPatterns = new Set();
 
     for (const cat of GITIGNORE_CATEGORIES) {
-        const catItems = cat.items
-            .filter(item => selectedSet.has(item.pattern))
-            .map(item => item.pattern);
+        for (const item of cat.items) {
+            const isDetected = detectedPatterns.has(item.pattern);
+            const isRecommended = recommendedPatterns.has(item.pattern);
 
-        if (catItems.length > 0) {
-            sections.push(`# ${cat.name}\n${catItems.join('\n')}`);
+            if ((isDetected || isRecommended) && !seenPatterns.has(item.pattern)) {
+                items.push({
+                    pattern: item.pattern,
+                    category: cat.name,
+                    isDetected,
+                    checked: isDetected || (cat.key === 'env' && item.pattern === '.env') || (isNode && item.pattern === 'node_modules/')
+                });
+                seenPatterns.add(item.pattern);
+            }
         }
     }
 
-    if (customEntries.length > 0) {
-        sections.push(`# Custom Entries\n${customEntries.join('\n')}`);
+    return {
+        detectedPatterns,
+        recommendedItems: items
+    };
+}
+
+function buildGitignoreContent(selectedItems) {
+    const categoryOrder = [
+        'Environment Variables',
+        'Dependencies & Packages',
+        'Build & Distribution Outputs',
+        'IDEs & Editors',
+        'Operating System & Logs',
+        'Custom Entries'
+    ];
+
+    const grouped = {};
+    for (const item of selectedItems) {
+        const cat = item.category || 'Custom Entries';
+        if (!grouped[cat]) grouped[cat] = [];
+        if (!grouped[cat].includes(item.pattern)) {
+            grouped[cat].push(item.pattern);
+        }
     }
 
-    return sections.join('\n\n') + '\n';
+    const sections = [];
+    for (const catName of categoryOrder) {
+        if (grouped[catName] && grouped[catName].length > 0) {
+            sections.push(`# ${catName}\n${grouped[catName].join('\n')}`);
+            delete grouped[catName];
+        }
+    }
+
+    for (const [catName, patterns] of Object.entries(grouped)) {
+        if (patterns.length > 0) {
+            sections.push(`# ${catName}\n${patterns.join('\n')}`);
+        }
+    }
+
+    return sections.length > 0 ? sections.join('\n\n') + '\n' : '';
 }
 
 function printGitignorePreview(content) {
@@ -172,111 +211,254 @@ function printGitignorePreview(content) {
     console.log();
 }
 
+/**
+ * Interactive menu to pick, customize, and generate .gitignore
+ * Uses ANSI cursor controls and keypress events for a flicker-free UI.
+ * @param {string} targetPath - Directory where .gitignore should be created
+ * @returns {Promise<boolean>} - true if saved, false if skipped/cancelled
+ */
 async function promptGitignore(targetPath) {
-    const { detectedPatterns, recommendedPatterns } = analyzeProject(targetPath);
-    let customEntries = [];
-    let currentSelected = Array.from(recommendedPatterns);
+    const { detectedPatterns, recommendedItems } = analyzeProject(targetPath);
+    const items = [...recommendedItems];
 
     console.log();
     writeSectionHeader('Standard .gitignore Generator', 'cyan');
     if (detectedPatterns.size > 0) {
         writeStatusInfo(`Detected ${detectedPatterns.size} standard artifact(s) present on disk.`);
     } else {
-        writeStatusInfo('No existing artifacts detected on disk. Standard items pre-selected.');
+        writeStatusInfo('No existing artifacts detected on disk. Standard recommendations pre-selected.');
     }
-    console.log(chalk.gray('  Use arrow keys to navigate, Spacebar to toggle, Enter to confirm selection.\n'));
+    console.log(chalk.gray('  Use Arrow Keys to navigate, Spacebar to toggle, Enter to confirm/execute.\n'));
 
-    let reviewing = false;
+    // Menu options: items[0..N-1], then actions at bottom
+    // actions:
+    //   N     : Add custom entry
+    //   N + 1 : Save and generate
+    //   N + 2 : Cancel
+    let cursor = 0;
+    let lastRenderLineCount = 0;
 
-    while (true) {
-        if (!reviewing) {
-            const choices = [];
+    const actionLabels = [
+        { key: 'custom', label: '+ Add custom entry...' },
+        { key: 'save',   label: '✔ Save and generate .gitignore' },
+        { key: 'cancel', label: '✖ Cancel (skip .gitignore)' }
+    ];
 
-            for (const cat of GITIGNORE_CATEGORIES) {
-                choices.push(new inquirer.Separator(chalk.bold.cyan(`── ${cat.name} ──`)));
+    function calculateWindow(activeCursor, totalItemCount, maxVisible) {
+        if (totalItemCount <= maxVisible) {
+            return { start: 0, end: totalItemCount };
+        }
+        const half = Math.floor(maxVisible / 2);
+        let start = Math.max(0, activeCursor - half);
+        let end = start + maxVisible;
+        if (end > totalItemCount) {
+            end = totalItemCount;
+            start = end - maxVisible;
+        }
+        return { start, end };
+    }
 
-                for (const item of cat.items) {
-                    const isDetected = detectedPatterns.has(item.pattern);
-                    const tag = isDetected ? chalk.green(' [Detected]') : '';
-                    const desc = chalk.gray(`(${item.desc})`);
-                    const isChecked = currentSelected.includes(item.pattern);
+    function render() {
+        const maxVisibleItems = Math.max(6, Math.min(10, (process.stdout.rows || 24) - 10));
+        const totalItems = items.length;
+        const totalRows = totalItems + actionLabels.length;
 
-                    choices.push({
-                        name: `${item.pattern.padEnd(18)} ${desc}${tag}`,
-                        value: item.pattern,
-                        checked: isChecked
-                    });
+        // Erase previous render
+        if (lastRenderLineCount > 0) {
+            readline.cursorTo(process.stdout, 0);
+            process.stdout.write(`\x1B[${lastRenderLineCount}A\x1B[0J`);
+        }
+
+        const lines = [];
+
+        // Determine scrolling window for item rows
+        const itemCursor = cursor < totalItems ? cursor : totalItems - 1;
+        const { start, end } = calculateWindow(itemCursor, totalItems, maxVisibleItems);
+
+        if (start > 0) {
+            lines.push(chalk.gray(`     ↑ ${start} more pattern(s) above...`));
+        }
+
+        for (let i = start; i < end; i++) {
+            const item = items[i];
+            const isFocused = i === cursor;
+            const prefix = isFocused ? chalk.cyan('> ') : '  ';
+            const check = item.checked ? chalk.green('[x]') : chalk.gray('[ ]');
+            const patternStr = (isFocused ? chalk.bold.white(item.pattern) : chalk.white(item.pattern)).padEnd(22);
+            const categoryStr = chalk.gray(`(${item.category})`);
+            const detectedStr = item.isDetected ? chalk.green(' [Detected]') : '';
+
+            lines.push(`${prefix} ${check} ${patternStr} ${categoryStr}${detectedStr}`);
+        }
+
+        if (end < totalItems) {
+            lines.push(chalk.gray(`     ↓ ${totalItems - end} more pattern(s) below...`));
+        }
+
+        lines.push(chalk.gray('  ' + '─'.repeat(54)));
+
+        // Action rows
+        for (let a = 0; a < actionLabels.length; a++) {
+            const actionIdx = totalItems + a;
+            const isFocused = actionIdx === cursor;
+            const prefix = isFocused ? chalk.cyan('> ') : '  ';
+            const act = actionLabels[a];
+
+            let coloredLabel;
+            if (act.key === 'custom') {
+                coloredLabel = isFocused ? chalk.bold.cyan(act.label) : chalk.cyan(act.label);
+            } else if (act.key === 'save') {
+                coloredLabel = isFocused ? chalk.bold.green(act.label) : chalk.green(act.label);
+            } else {
+                coloredLabel = isFocused ? chalk.bold.red(act.label) : chalk.gray(act.label);
+            }
+
+            lines.push(`${prefix}   ${coloredLabel}`);
+        }
+
+        for (const line of lines) {
+            process.stdout.write(line + '\n');
+        }
+
+        lastRenderLineCount = lines.length;
+    }
+
+    return new Promise((resolve, reject) => {
+        readline.emitKeypressEvents(process.stdin);
+        if (process.stdin.isTTY) {
+            process.stdin.setRawMode(true);
+        }
+        process.stdout.write('\x1B[?25l'); // Hide cursor
+
+        render();
+
+        const onKeypress = async (str, key) => {
+            if (!key) return;
+
+            // Handle Ctrl+C
+            if (key.ctrl && key.name === 'c') {
+                cleanup();
+                const err = new Error('USER_CANCEL');
+                err.name = 'UserCancelError';
+                reject(err);
+                return;
+            }
+
+            const totalRows = items.length + actionLabels.length;
+
+            if (key.name === 'up') {
+                cursor = (cursor - 1 + totalRows) % totalRows;
+                render();
+                return;
+            }
+
+            if (key.name === 'down') {
+                cursor = (cursor + 1) % totalRows;
+                render();
+                return;
+            }
+
+            if (key.name === 'space' || key.name === 'return') {
+                // If cursor is on a checkbox item
+                if (cursor < items.length) {
+                    items[cursor].checked = !items[cursor].checked;
+                    render();
+                    return;
+                }
+
+                // If cursor is on an action row
+                const actionIndex = cursor - items.length;
+                const action = actionLabels[actionIndex]?.key;
+
+                if (action === 'custom') {
+                    // Temporarily pause raw keypress mode to ask for text input
+                    pausePrompt();
+
+                    console.log();
+                    const { customPattern } = await inquirer.prompt([{
+                        type: 'input',
+                        name: 'customPattern',
+                        message: 'Enter custom file, folder, or glob pattern (e.g. config/keys.json or *.tmp):',
+                        validate: v => v && v.trim().length > 0 ? true : 'Pattern cannot be empty'
+                    }]);
+
+                    const clean = customPattern.trim();
+                    const existingIdx = items.findIndex(i => i.pattern.toLowerCase() === clean.toLowerCase());
+                    if (existingIdx >= 0) {
+                        items[existingIdx].checked = true;
+                        cursor = existingIdx;
+                    } else {
+                        items.push({
+                            pattern: clean,
+                            category: 'Custom Entries',
+                            isDetected: false,
+                            checked: true,
+                            isCustom: true
+                        });
+                        cursor = items.length - 1;
+                    }
+
+                    console.log();
+                    resumePrompt();
+                    render();
+                    return;
+                }
+
+                if (action === 'save') {
+                    cleanup();
+
+                    const selectedItems = items.filter(i => i.checked);
+                    const content = buildGitignoreContent(selectedItems);
+
+                    console.log();
+                    writeSectionHeader('.gitignore Preview Summary', 'yellow');
+                    printGitignorePreview(content);
+
+                    const gitignoreFile = path.join(targetPath, '.gitignore');
+                    fs.writeFileSync(gitignoreFile, content, 'utf8');
+
+                    writeStatusOK(`Created .gitignore with ${selectedItems.length} pattern(s).`);
+                    resolve(true);
+                    return;
+                }
+
+                if (action === 'cancel') {
+                    cleanup();
+                    console.log();
+                    writeStatusWarn('.gitignore creation skipped.');
+                    resolve(false);
+                    return;
                 }
             }
+        };
 
-            const { chosen } = await inquirer.prompt([{
-                type: 'checkbox',
-                name: 'chosen',
-                message: 'Select patterns to include in .gitignore:',
-                choices,
-                pageSize: 18
-            }]);
-
-            currentSelected = chosen;
-            reviewing = true;
-        }
-
-        const previewContent = buildGitignoreContent(currentSelected, customEntries);
-
-        console.log();
-        writeSectionHeader('.gitignore Preview Summary', 'yellow');
-        printGitignorePreview(previewContent);
-
-        const { action } = await inquirer.prompt([{
-            type: 'list',
-            name: 'action',
-            message: 'Choose action for this .gitignore:',
-            choices: [
-                { name: chalk.green('✓ Save and apply .gitignore to project'), value: 'save' },
-                { name: chalk.cyan('+ Add custom entry (file or glob pattern)...'), value: 'add_custom' },
-                { name: chalk.yellow('✎ Modify pattern selections'), value: 'modify' },
-                { name: chalk.red('✗ Cancel (skip creating .gitignore)'), value: 'cancel' }
-            ]
-        }]);
-
-        if (action === 'save') {
-            const gitignoreFile = path.join(targetPath, '.gitignore');
-            fs.writeFileSync(gitignoreFile, previewContent, 'utf8');
-            console.log();
-            writeStatusOK(`Created .gitignore with ${currentSelected.length + customEntries.length} pattern(s).`);
-            return true;
-        }
-
-        if (action === 'add_custom') {
-            console.log();
-            const { pattern } = await inquirer.prompt([{
-                type: 'input',
-                name: 'pattern',
-                message: 'Enter custom file, folder, or glob pattern (e.g., config/keys.json or *.bak):',
-                validate: v => v && v.trim().length > 0 ? true : 'Pattern cannot be empty'
-            }]);
-
-            const cleanPattern = pattern.trim();
-            if (!customEntries.includes(cleanPattern)) {
-                customEntries.push(cleanPattern);
-                writeStatusOK(`Added custom pattern '${cleanPattern}'.`);
-            } else {
-                writeStatusWarn(`Pattern '${cleanPattern}' is already in custom entries.`);
+        function pausePrompt() {
+            process.stdin.removeListener('keypress', onKeypress);
+            if (process.stdin.isTTY) {
+                process.stdin.setRawMode(false);
             }
-            continue;
+            process.stdout.write('\x1B[?25h'); // Show cursor
+            lastRenderLineCount = 0;
         }
 
-        if (action === 'modify') {
-            reviewing = false;
-            continue;
+        function resumePrompt() {
+            if (process.stdin.isTTY) {
+                process.stdin.setRawMode(true);
+            }
+            process.stdout.write('\x1B[?25l'); // Hide cursor
+            process.stdin.on('keypress', onKeypress);
         }
 
-        if (action === 'cancel') {
-            console.log();
-            writeStatusWarn('.gitignore creation skipped.');
-            return false;
+        function cleanup() {
+            process.stdin.removeListener('keypress', onKeypress);
+            if (process.stdin.isTTY) {
+                process.stdin.setRawMode(false);
+            }
+            process.stdout.write('\x1B[?25h'); // Show cursor
         }
-    }
+
+        process.stdin.on('keypress', onKeypress);
+    });
 }
 
 module.exports = {

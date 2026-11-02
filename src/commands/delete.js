@@ -42,7 +42,11 @@ function findLocalCandidateRepos(repoName, owner = '') {
             const gitConfigFile = path.join(gitDir, 'config');
             if (fs.existsSync(gitConfigFile)) {
                 const configText = fs.readFileSync(gitConfigFile, 'utf8').toLowerCase();
-                configMatch = configText.includes(cleanRepo) || (cleanOwner && configText.includes(cleanOwner));
+                const hasRepoInUrl = configText.includes(`/${cleanRepo}.git`) ||
+                                     configText.includes(`/${cleanRepo}`) ||
+                                     configText.includes(`:${cleanRepo}.git`);
+                const hasOwnerInUrl = cleanOwner ? configText.includes(cleanOwner) : true;
+                configMatch = hasRepoInUrl && hasOwnerInUrl;
             }
 
             if (baseMatch || configMatch) {
@@ -148,7 +152,6 @@ async function deleteProject() {
             writeStatusOK(`Repository '${owner}/${repoName}' was permanently deleted from GitHub!`);
 
             const matchedProjects = removeTrackedProjectByRepo(repoName, owner);
-            let unlinkedAny = false;
 
             if (matchedProjects.length > 0) {
                 console.log(chalk.gray(`  Removed '${repoName}' from local tracked projects list.`));
@@ -169,7 +172,6 @@ async function deleteProject() {
                                 try {
                                     fs.removeSync(localGit);
                                     writeStatusOK(`Removed local .git folder from: ${p.path}`);
-                                    unlinkedAny = true;
                                 } catch (err) {
                                     writeStatusError(`Could not remove .git folder: ${err.message}`);
                                 }
@@ -180,7 +182,7 @@ async function deleteProject() {
                     }
                 }
             } else {
-                // Untracked fallback detection
+                // Fallback detection for untracked local repository
                 const candidates = findLocalCandidateRepos(repoName, owner);
 
                 if (candidates.length > 0) {
@@ -193,7 +195,7 @@ async function deleteProject() {
                         const { removeCandidateGit } = await inquirer.prompt([{
                             type: 'confirm',
                             name: 'removeCandidateGit',
-                            message: `Delete its .git folder (unlink from Git)?`,
+                            message: 'Delete its .git folder (unlink from Git)?',
                             default: false
                         }]);
 
@@ -201,7 +203,6 @@ async function deleteProject() {
                             try {
                                 fs.removeSync(localGit);
                                 writeStatusOK(`Removed local .git folder from: ${candidate}`);
-                                unlinkedAny = true;
                             } catch (err) {
                                 writeStatusError(`Could not remove .git folder: ${err.message}`);
                             }
@@ -246,7 +247,6 @@ async function deleteProject() {
                             try {
                                 fs.removeSync(manualGit);
                                 writeStatusOK(`Removed local .git folder from: ${resolvedManual}`);
-                                unlinkedAny = true;
                             } catch (err) {
                                 writeStatusError(`Could not remove .git folder: ${err.message}`);
                             }
