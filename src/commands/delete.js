@@ -2,6 +2,7 @@ const chalk = require('chalk');
 const inquirer = require('inquirer');
 const fs = require('fs-extra');
 const path = require('path');
+const os = require('os');
 
 const {
     clearHost,
@@ -16,6 +17,42 @@ const {
 const { selectProfile, getToken } = require('../profiles');
 const { fetchUserRepositories, deleteRemoteRepo } = require('../api');
 const { removeTrackedProjectByRepo } = require('../projects');
+
+function findLocalCandidateRepos(repoName, owner = '') {
+    const cleanRepo = repoName.toLowerCase();
+    const cleanOwner = (owner || '').toLowerCase();
+    const candidates = new Set();
+
+    const searchDirs = [
+        process.cwd(),
+        path.join(path.dirname(process.cwd()), repoName),
+        path.join(os.homedir(), 'Projects', repoName),
+        path.join(os.homedir(), repoName)
+    ];
+
+    for (const dir of searchDirs) {
+        try {
+            const resolved = path.resolve(dir);
+            if (!fs.existsSync(resolved)) continue;
+            const gitDir = path.join(resolved, '.git');
+            if (!fs.existsSync(gitDir)) continue;
+
+            const baseMatch = path.basename(resolved).toLowerCase() === cleanRepo;
+            let configMatch = false;
+            const gitConfigFile = path.join(gitDir, 'config');
+            if (fs.existsSync(gitConfigFile)) {
+                const configText = fs.readFileSync(gitConfigFile, 'utf8').toLowerCase();
+                configMatch = configText.includes(cleanRepo) || (cleanOwner && configText.includes(cleanOwner));
+            }
+
+            if (baseMatch || configMatch) {
+                candidates.add(resolved);
+            }
+        } catch {}
+    }
+
+    return Array.from(candidates);
+}
 
 async function deleteProject() {
     clearHost();
@@ -111,29 +148,110 @@ async function deleteProject() {
             writeStatusOK(`Repository '${owner}/${repoName}' was permanently deleted from GitHub!`);
 
             const matchedProjects = removeTrackedProjectByRepo(repoName, owner);
-            console.log(chalk.gray(`  Removed '${repoName}' from local tracked projects list.`));
+            let unlinkedAny = false;
 
-            for (const p of matchedProjects) {
-                if (p.path && fs.existsSync(p.path)) {
-                    const localGit = path.join(p.path, '.git');
-                    if (fs.existsSync(localGit)) {
+            if (matchedProjects.length > 0) {
+                console.log(chalk.gray(`  Removed '${repoName}' from local tracked projects list.`));
+
+                for (const p of matchedProjects) {
+                    if (p.path && fs.existsSync(p.path)) {
+                        const localGit = path.join(p.path, '.git');
+                        if (fs.existsSync(localGit)) {
+                            console.log();
+                            const { removeLocalGit } = await inquirer.prompt([{
+                                type: 'confirm',
+                                name: 'removeLocalGit',
+                                message: `Found local folder at '${p.path}'. Also delete its .git folder (unlink from Git)?`,
+                                default: false
+                            }]);
+
+                            if (removeLocalGit) {
+                                try {
+                                    fs.removeSync(localGit);
+                                    writeStatusOK(`Removed local .git folder from: ${p.path}`);
+                                    unlinkedAny = true;
+                                } catch (err) {
+                                    writeStatusError(`Could not remove .git folder: ${err.message}`);
+                                }
+                            } else {
+                                writeStatusInfo(`Preserved local files and .git folder in: ${p.path}`);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Untracked fallback detection
+                const candidates = findLocalCandidateRepos(repoName, owner);
+
+                if (candidates.length > 0) {
+                    for (const candidate of candidates) {
+                        const localGit = path.join(candidate, '.git');
                         console.log();
-                        const { removeLocalGit } = await inquirer.prompt([{
+                        writeStatusInfo(`Detected untracked local repository matching '${repoName}':`);
+                        console.log(chalk.gray(`  ${candidate}`));
+
+                        const { removeCandidateGit } = await inquirer.prompt([{
                             type: 'confirm',
-                            name: 'removeLocalGit',
-                            message: `Found local folder at '${p.path}'. Also delete its .git folder (unlink from Git)?`,
+                            name: 'removeCandidateGit',
+                            message: `Delete its .git folder (unlink from Git)?`,
                             default: false
                         }]);
 
-                        if (removeLocalGit) {
+                        if (removeCandidateGit) {
                             try {
                                 fs.removeSync(localGit);
-                                writeStatusOK(`Removed local .git folder from: ${p.path}`);
+                                writeStatusOK(`Removed local .git folder from: ${candidate}`);
+                                unlinkedAny = true;
                             } catch (err) {
                                 writeStatusError(`Could not remove .git folder: ${err.message}`);
                             }
                         } else {
-                            writeStatusInfo(`Preserved local files and .git folder in: ${p.path}`);
+                            writeStatusInfo(`Preserved local files and .git folder in: ${candidate}`);
+                        }
+                    }
+                } else {
+                    console.log();
+                    const { unlinkManual } = await inquirer.prompt([{
+                        type: 'confirm',
+                        name: 'unlinkManual',
+                        message: `No tracked local folder found for '${repoName}'. Unlink a local folder manually?`,
+                        default: false
+                    }]);
+
+                    if (unlinkManual) {
+                        const { manualPath } = await inquirer.prompt([{
+                            type: 'input',
+                            name: 'manualPath',
+                            message: 'Enter local folder path to unlink:',
+                            default: process.cwd(),
+                            validate: p => {
+                                const resolved = path.resolve(p.trim());
+                                if (!fs.existsSync(resolved)) return 'Folder does not exist on disk';
+                                if (!fs.existsSync(path.join(resolved, '.git'))) return 'Folder does not contain a .git directory';
+                                return true;
+                            }
+                        }]);
+
+                        const resolvedManual = path.resolve(manualPath.trim());
+                        const manualGit = path.join(resolvedManual, '.git');
+
+                        const { confirmManualRemove } = await inquirer.prompt([{
+                            type: 'confirm',
+                            name: 'confirmManualRemove',
+                            message: `Are you sure you want to delete .git folder from '${resolvedManual}'?`,
+                            default: false
+                        }]);
+
+                        if (confirmManualRemove) {
+                            try {
+                                fs.removeSync(manualGit);
+                                writeStatusOK(`Removed local .git folder from: ${resolvedManual}`);
+                                unlinkedAny = true;
+                            } catch (err) {
+                                writeStatusError(`Could not remove .git folder: ${err.message}`);
+                            }
+                        } else {
+                            writeStatusInfo(`Preserved local files and .git folder in: ${resolvedManual}`);
                         }
                     }
                 }

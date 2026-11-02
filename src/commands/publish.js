@@ -18,6 +18,7 @@ const { getProfileSSHCommand } = require('../ssh');
 const { selectProfile, getToken } = require('../profiles');
 const { createRemoteRepo } = require('../api');
 const { addTrackedProject } = require('../projects');
+const { promptGitignore } = require('../gitignore');
 
 async function publishProject(inputPath, inputRepoName, inputProfile) {
     let localPath = inputPath;
@@ -97,6 +98,26 @@ async function publishProject(inputPath, inputRepoName, inputProfile) {
         runGit(['config', '--local', 'core.sshCommand', sshCmd], { cwd: localPath });
     } catch (e) {
         writeStatusWarn(`Could not apply local git configuration: ${e.message}`);
+    }
+
+    // Ensure .gitignore exists or prompt to generate one
+    const gitignoreFile = path.join(localPath, '.gitignore');
+    if (!fs.existsSync(gitignoreFile)) {
+        console.log();
+        console.log(chalk.yellow('  ◈ No .gitignore file detected in this project.'));
+        const { createGitignore } = await inquirer.prompt([{
+            type: 'confirm',
+            name: 'createGitignore',
+            message: 'Generate a standard .gitignore file now?',
+            default: true
+        }]);
+
+        if (createGitignore) {
+            await promptGitignore(localPath);
+        } else {
+            console.log();
+            writeStatusWarn('Proceeding without .gitignore. All local files and directories will be staged!');
+        }
     }
 
     // Check changes & commits
@@ -191,6 +212,9 @@ async function publishProject(inputPath, inputRepoName, inputProfile) {
         return;
     }
 
+    // Register in tracked projects immediately so the repo is remembered even if push is interrupted
+    addTrackedProject(localPath, repoName, profile.github_user);
+
     // Push to GitHub
     console.log(chalk.cyan(`\n  ◈ Pushing branch '${publishBranch}' to GitHub...`));
     try {
@@ -202,14 +226,11 @@ async function publishProject(inputPath, inputRepoName, inputProfile) {
         console.log();
         writeStatusOK('Successfully published to GitHub!');
         console.log(chalk.cyan(`  URL: https://github.com/${profile.github_user}/${repoName}`));
-
-        // Register in tracked projects
-        addTrackedProject(localPath, repoName, profile.github_user);
-        writeStatusOK('Added to tracked projects registry for Quick Commit & Push!');
         console.log();
     } catch (e) {
         console.log();
         writeStatusError(`Git push failed: ${e.message}. Ensure your SSH key is added to GitHub.`);
+        console.log(chalk.gray(`  (Project is saved in local registry. You can retry with Quick Commit & Push)`));
     }
 
     await waitForKeypress();
